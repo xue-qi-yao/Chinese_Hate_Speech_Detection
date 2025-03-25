@@ -1,0 +1,5 @@
+*_data/
+*_data_processed/
+*nohup.out
+test_*
+*.pt
