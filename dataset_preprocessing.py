@@ -7,6 +7,7 @@ from PIL import Image, ImageDraw, ImageFont
 import numpy as np
 import emoji
 import argparse
+from tqdm import tqdm
 
 
 def read_csv_tsv(path):
@@ -34,12 +35,13 @@ def create_image(word, args):
 
 def text_to_speech(dir_list):
     for dir_path in dir_list:
+        print(f"***** Start to convert text data in {dir_path} to speech *****")
         pipeline = KPipeline(lang_code='z') 
         base_path = Path(dir_path.split("/")[-1].split("_")[0]+ "_speech_data")
         base_path.mkdir(parents=True, exist_ok=True)
         list_base = read_csv_tsv(dir_path)
 
-        for i, text in enumerate(list_base):
+        for i, text in tqdm(enumerate(list_base)):
             generator = next(pipeline(text, voice='af_heart', speed=1, split_pattern=r'\n+'))
             gs, ps, audio = generator
             print(f"{i}: {gs} {ps}")
@@ -48,11 +50,12 @@ def text_to_speech(dir_list):
 
 def text_to_image(dir_list, args):
     for dir_path in dir_list:
+        print(f"***** Start to convert text data in {dir_path} to image *****")
         base_path = Path(dir_path.split("/")[-1].split("_")[0] + "_image_data")
         base_path.mkdir(exist_ok=True)
         list_base = read_csv_tsv(dir_path)
 
-        for i, sentence in enumerate(list_base):
+        for i, sentence in tqdm(enumerate(list_base)):
             for j, text in enumerate(sentence):
                 image = create_image(text, args)
                 img_dir = base_path / f"{i}"
