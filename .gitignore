@@ -6,3 +6,4 @@ test_*
 *.png
 train_log
 aligner_weight
+__pycache__
