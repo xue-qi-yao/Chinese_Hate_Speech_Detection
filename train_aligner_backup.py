@@ -18,38 +18,6 @@ from utils import read_csv_tsv
 from utils import downsample
 
 
-def load_text(text_path_list):
-    text_list = []
-    for text_path in text_path_list:
-        list_text = read_csv_tsv(text_path)
-        text_list.extend(list_text)
-    return text_list
-
-
-def load_img(img_path_list):
-    img_dir_list = []
-    for img_path in img_path_list:
-        img_path = img_path + "_processed/" + img_path + ".json"
-        with open(img_path, "r") as f:
-            idx2embedding = json.load(f)
-            embedding_list = [idx2embedding[k] for k in sorted(idx2embedding, key=int)]
-            img_dir_list.extend(embedding_list)
-    return img_dir_list
-
-
-def load_speech(speech_path_list):
-    speech_dir_list = []
-    for speech_path in speech_path_list:
-        speech_path = speech_path + "_processed/" + speech_path + ".h5"
-        with h5py.File(speech_path, "r") as f:
-            idx2embedding = {}
-            for key in f.keys():
-                idx2embedding[key] = f[key][()]
-            embedding_list = [idx2embedding[k] for k in sorted(idx2embedding, key=int)]
-            speech_dir_list.extend(embedding_list)
-    return speech_dir_list
-
-
 class AlignBert(nn.Module):
     def __init__(self, args):
         super().__init__()
@@ -73,24 +41,64 @@ class AlignBert(nn.Module):
     
 
 class ImageTextDataset(Dataset):
-    def __init__(self, img_list, text_list):
+    def __init__(self, img_path_list, text_path_list):
         super().__init__()
-        self.text_list, self.img_list = text_list, img_list
+        self.text_path_list = text_path_list
+        self.img_path_list = img_path_list
+        self.text_list, self.img_list = self.load_text(), self.load_img()
+
+    def load_text(self):
+        text_list = []
+        for text_path in self.text_path_list:
+            list_text = read_csv_tsv(text_path)
+            text_list.extend(list_text)
+        return text_list
+
+    def load_img(self):
+        img_dir_list = []
+        for img_path in self.img_path_list:
+            img_path = img_path + "_processed/" + img_path + ".json"
+            with open(img_path, "r") as f:
+                idx2embedding = json.load(f)
+                embedding_list = [idx2embedding[k] for k in sorted(idx2embedding, key=int)]
+                img_dir_list.extend(embedding_list)
+        return img_dir_list
     
     def __len__(self):
-        return len(self.text_list)
+        return len(self.load_text())
     
     def __getitem__(self, index):
         return self.text_list[index], self.img_list[int(index)]
     
 
 class SpeechTextDataset(Dataset):
-    def __init__(self, speech_list, text_list):
+    def __init__(self, speech_path_list, text_path_list):
         super().__init__()
-        self.text_list, self.speech_list = text_list, speech_list
+        self.text_path_list = text_path_list
+        self.speech_path_list = speech_path_list
+        self.text_list, self.speech_list = self.load_text(), self.load_speech()
+    
+    def load_text(self):
+        text_list = []
+        for text_path in self.text_path_list:
+            list_text = read_csv_tsv(text_path)
+            text_list.extend(list_text)
+        return text_list
+    
+    def load_speech(self):
+        speech_dir_list = []
+        for speech_path in self.speech_path_list:
+            speech_path = speech_path + "_processed/" + speech_path + ".h5"
+            with h5py.File(speech_path, "r") as f:
+                idx2embedding = {}
+                for key in f.keys():
+                    idx2embedding[key] = f[key][()]
+                embedding_list = [idx2embedding[k] for k in sorted(idx2embedding, key=int)]
+                speech_dir_list.extend(embedding_list)
+        return speech_dir_list
     
     def __len__(self):
-        return len(self.text_list)
+        return len(self.load_text())
     
     def __getitem__(self, index):
         return self.text_list[index], self.speech_list[int(index)]
@@ -167,42 +175,23 @@ def preprocess_speech_data(speech_dirs, processor, model, args):
     return processed_speech_dirs
 
 
-def train_step(model, dataloader, optimizer, loss_fn):
-    model.train()
-    epoch_loss = 0
-    for texts, img_speech in dataloader:
-        text_output, img_speech_output = model(texts, img_speech)
-        loss = loss_fn(img_speech_output["last_hidden_state"], text_output["last_hidden_state"])
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        epoch_loss += loss.item()
-    epoch_loss /= len(dataloader)
-    return epoch_loss
-
-def val_step(model, dataloader, loss_fn):
-    model.eval()
-    epoch_loss=0
-    with torch.inference_mode():
-        for texts, img_speech in dataloader:
-            text_output, img_speech_output = model(texts, img_speech)
-            loss = loss_fn(img_speech_output["last_hidden_state"], text_output["last_hidden_state"])
-            epoch_loss += loss.item()
-    epoch_loss /= len(dataloader)
-    return epoch_loss
-
-
-def train(model, train_dataloader, val_dataloader, optimizer, loss_fn, args):
-    epoch_train_loss_list = []
-    epoch_val_loss_list = []
+def train_step(model, dataloader, optimizer, loss_fn, args):
+    epoch_loss_list = []
     for epoch in tqdm(range(args.epoch_num)):
-        print(f"***** Start Epoch{epoch+1} *****")
-        epoch_train_loss = train_step(model, train_dataloader, optimizer, loss_fn)
-        epoch_val_loss = val_step(model, val_dataloader, loss_fn)
-        epoch_train_loss_list.append(epoch_train_loss)
-        epoch_val_loss_list.append(epoch_val_loss)
-        print(f"Epoch{epoch+1} | train loss {epoch_train_loss} | val loss {epoch_val_loss}")
-    return epoch_train_loss_list, epoch_val_loss_list
+        print(f"****** Start Epoch{epoch+1} *****")
+        epoch_loss = 0
+        for texts, imgs in dataloader:
+            text_output, img_output = model(texts, imgs)
+            loss = loss_fn(img_output["last_hidden_state"], text_output["last_hidden_state"])
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            epoch_loss += loss.item()
+        epoch_loss /= len(dataloader)
+        print(f"Epoch{epoch+1} loss: {epoch_loss}")
+        epoch_loss_list.append(epoch_loss)
+    return epoch_loss_list
+
 
 
 if __name__ == "__main__":
@@ -212,9 +201,9 @@ if __name__ == "__main__":
     parser.add_argument("--bert_base_model", default="bert-base-chinese", type=str)
     parser.add_argument("--device", default="cuda:1" if torch.cuda.is_available() else "cpu", type=str)
     parser.add_argument("--preprocess", default=False, type=bool)
-    parser.add_argument("--epoch_num", default=50, type=int)
+    parser.add_argument("--epoch_num", default=30, type=int)
     parser.add_argument("--batch_size", default=64, type=int)
-    parser.add_argument("--align_modality", default="image", type=str)
+    parser.add_argument("--align_modality", default="speech", type=str)
     parser.add_argument("--learning_rate", default=0.01, type=float)
     parser.add_argument("--aligner_weight_dir", default="aligner_weight", type=str)
     parser.add_argument("--train_log_dir", default="train_log", type=str)
@@ -230,12 +219,9 @@ if __name__ == "__main__":
     if args.align_modality=="image":
         img_or_speech_path_list = ["base_image_data", "emoji_image_data"]
         text_path_list = ["ToxiCloakCN/Datasets/base_data.tsv", "ToxiCloakCN/Datasets/Only_Keywords/emoji_keyword.csv"]
-        img_or_speech_list = load_img(img_or_speech_path_list)
     else:
         img_or_speech_path_list = ["base_speech_data", "homo_speech_data"]
         text_path_list = ["ToxiCloakCN/Datasets/base_data.tsv", "ToxiCloakCN/Datasets/Only_Keywords/homo_keyword.csv"]
-        img_or_speech_list = load_speech(img_or_speech_path_list)
-    text_list = load_text(text_path_list)
 
     if args.preprocess and args.align_modality=="image":
         print("***** Start Data Preprocess *****")
@@ -244,43 +230,31 @@ if __name__ == "__main__":
         print("***** Start Data Preprocess *****")
         img_or_speech_path_list = preprocess_speech_data(img_or_speech_path_list, speech_processor, speech_model, args)
     
-    train_text_list = text_list[:int(0.9*len(text_list))]
-    train_img_or_speech_list = img_or_speech_list[:int(0.9*len(img_or_speech_list))]
-    val_text_list = text_list[int(0.9*len(text_list)):]
-    val_img_or_speech_list = img_or_speech_list[int(0.9*len(img_or_speech_list)):]
-
     print("***** Start Dataset Construction *****")
     if args.align_modality=="image":
-        train_img_text_dataset = ImageTextDataset(train_img_or_speech_list, train_text_list)
-        val_img_text_dataset = ImageTextDataset(val_img_or_speech_list, val_text_list)
+        img_text_dataset = ImageTextDataset(img_or_speech_path_list, text_path_list)
     elif args.align_modality=="speech":
-        train_speech_text_dataset = SpeechTextDataset(train_img_or_speech_list, train_text_list)
-        val_speech_text_dataset = SpeechTextDataset(val_img_or_speech_list, val_text_list)
+        speech_text_dataset = SpeechTextDataset(img_or_speech_path_list, text_path_list)
     
     print("***** Start DataLoader Construction *****")
     if args.align_modality=="image":
-        train_dataloader = DataLoader(train_img_text_dataset, batch_size=64, shuffle=False, collate_fn=(lambda batch: img_collate_fn(batch, tokenizer, args)))
-        val_dataloader = DataLoader(val_img_text_dataset, batch_size=64, shuffle=False, collate_fn=(lambda batch: img_collate_fn(batch, tokenizer, args)))
+        dataloader = DataLoader(img_text_dataset, batch_size=64, shuffle=False, collate_fn=(lambda batch: img_collate_fn(batch, tokenizer, args)))
     elif args.align_modality=="speech":
-        train_dataloader = DataLoader(train_speech_text_dataset, batch_size=64, shuffle=False, collate_fn=(lambda batch: speech_collate_fn(batch, tokenizer, args)))
-        val_dataloader = DataLoader(val_speech_text_dataset, batch_size=64, shuffle=False, collate_fn=(lambda batch: speech_collate_fn(batch, tokenizer, args)))
+        dataloader = DataLoader(speech_text_dataset, batch_size=64, shuffle=False, collate_fn=(lambda batch: speech_collate_fn(batch, tokenizer, args)))
 
     loss_fn = nn.MSELoss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
-    train_loss, val_loss = train(model, train_dataloader, val_dataloader, optimizer, loss_fn, args)
+    train_loss = train_step(model, dataloader, optimizer, loss_fn, args)
 
     if not Path(args.train_log_dir).exists():
         Path(args.train_log_dir).mkdir()
 
-    train_log_file = Path(args.train_log_dir) / (args.align_modality + "_lr_" + args.learning_rate + "_train.json")
-    val_log_file = Path(args.train_log_dir) / (args.align_modality + "_lr_" + args.learning_rate + "_val.json")
+    train_log_file = Path(args.train_log_dir) / (args.align_modality + args.learning_rate + ".json")
     with open(train_log_file, "w") as f:
         json.dump(train_loss, f)
-    with open(val_log_file, "w") as f:
-        json.dump(val_loss, f)
 
     if not Path(args.aligner_weight_dir).exists():
         Path(args.aligner_weight_dir).mkdir()
 
-    torch.save(model.clip_aligner.state_dict(), Path(args.aligner_weight_dir) / (args.align_modality + "_lr_" + args.learning_rate + "_aligner_weight" + ". pth"))
+    torch.save(model.clip_aligner.state_dict(), Path(args.aligner_weight_dir) / (args.align_modality +"_aligner_weight" + ".pth"))
     

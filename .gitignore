@@ -3,3 +3,6 @@
 *nohup.out
 test_*
 *.pt
+*.png
+train_log
+aligner_weight

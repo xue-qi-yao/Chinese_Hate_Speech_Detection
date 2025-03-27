@@ -8,17 +8,7 @@ import numpy as np
 import emoji
 import argparse
 from tqdm import tqdm
-
-
-def read_csv_tsv(path):
-    path = Path(path)
-    if path.suffix == ".csv":
-        df = pd.read_csv(path)
-        list_text = list(df["text"])
-    elif path.suffix == ".tsv":
-        df = pd.read_csv(path, sep="\t")
-        list_text = list(df["content"])
-    return list_text
+from utils import read_csv_tsv
 
 
 def create_image(word, args):
