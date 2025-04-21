@@ -5,7 +5,6 @@ from cn_clip.clip import load_from_name
 from transformers import AutoTokenizer, AutoModelForMaskedLM, WhisperProcessor, WhisperModel
 from torch.utils.data import Dataset, DataLoader
 import argparse
-import pandas as pd
 from pathlib import Path
 from PIL import Image
 import json
@@ -14,16 +13,8 @@ from tqdm import tqdm
 import librosa
 import h5py
 from clip_aligner import CLIPAligner
-from utils import read_csv_tsv
 from utils import downsample
-
-
-def load_text(text_path_list):
-    text_list = []
-    for text_path in text_path_list:
-        list_text = read_csv_tsv(text_path)
-        text_list.extend(list_text)
-    return text_list
+from utils import load_text
 
 
 def load_img(img_path_list):
@@ -204,18 +195,17 @@ def train(model, train_dataloader, val_dataloader, optimizer, loss_fn, args):
         print(f"Epoch{epoch+1} | train loss {epoch_train_loss} | val loss {epoch_val_loss}")
     return epoch_train_loss_list, epoch_val_loss_list
 
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--clip_base_model", default="ViT-B-16", type=str)
     parser.add_argument("--whisper_base_model", default="openai/whisper-base", type=str)
     parser.add_argument("--bert_base_model", default="bert-base-chinese", type=str)
-    parser.add_argument("--device", default="cuda:1" if torch.cuda.is_available() else "cpu", type=str)
+    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu", type=str)
     parser.add_argument("--preprocess", default=False, type=bool)
     parser.add_argument("--epoch_num", default=50, type=int)
     parser.add_argument("--batch_size", default=64, type=int)
-    parser.add_argument("--align_modality", default="image", type=str)
-    parser.add_argument("--learning_rate", default=0.01, type=float)
+    parser.add_argument("--align_modality", default="speech", type=str)
+    parser.add_argument("--learning_rate", default=0.001, type=float)
     parser.add_argument("--aligner_weight_dir", default="aligner_weight", type=str)
     parser.add_argument("--train_log_dir", default="train_log", type=str)
     args = parser.parse_args()
@@ -229,20 +219,19 @@ if __name__ == "__main__":
 
     if args.align_modality=="image":
         img_or_speech_path_list = ["base_image_data", "emoji_image_data"]
+        if args.preprocess:
+            print("***** Start Image Data Preprocess *****")
+            img_or_speech_path_list = preprocess_image_data(img_or_speech_path_list, args)
         text_path_list = ["ToxiCloakCN/Datasets/base_data.tsv", "ToxiCloakCN/Datasets/Only_Keywords/emoji_keyword.csv"]
         img_or_speech_list = load_img(img_or_speech_path_list)
     else:
         img_or_speech_path_list = ["base_speech_data", "homo_speech_data"]
+        if args.preprocess:
+            print("***** Start Speech Data Preprocess *****")
+            img_or_speech_path_list = preprocess_speech_data(img_or_speech_path_list, speech_processor, speech_model, args)
         text_path_list = ["ToxiCloakCN/Datasets/base_data.tsv", "ToxiCloakCN/Datasets/Only_Keywords/homo_keyword.csv"]
         img_or_speech_list = load_speech(img_or_speech_path_list)
     text_list = load_text(text_path_list)
-
-    if args.preprocess and args.align_modality=="image":
-        print("***** Start Data Preprocess *****")
-        img_or_speech_path_list = preprocess_image_data(img_or_speech_path_list, args)
-    elif args.preprocess and args.align_modality=="speech":
-        print("***** Start Data Preprocess *****")
-        img_or_speech_path_list = preprocess_speech_data(img_or_speech_path_list, speech_processor, speech_model, args)
     
     train_text_list = text_list[:int(0.9*len(text_list))]
     train_img_or_speech_list = img_or_speech_list[:int(0.9*len(img_or_speech_list))]
@@ -272,8 +261,8 @@ if __name__ == "__main__":
     if not Path(args.train_log_dir).exists():
         Path(args.train_log_dir).mkdir()
 
-    train_log_file = Path(args.train_log_dir) / (args.align_modality + "_lr_" + args.learning_rate + "_train.json")
-    val_log_file = Path(args.train_log_dir) / (args.align_modality + "_lr_" + args.learning_rate + "_val.json")
+    train_log_file = Path(args.train_log_dir) / ("aligner_" + args.align_modality + "_lr_" + str(args.learning_rate) + "_train.json")
+    val_log_file = Path(args.train_log_dir) / ("aligner_"+args.align_modality + "_lr_" + str(args.learning_rate) + "_val.json")
     with open(train_log_file, "w") as f:
         json.dump(train_loss, f)
     with open(val_log_file, "w") as f:
@@ -282,5 +271,4 @@ if __name__ == "__main__":
     if not Path(args.aligner_weight_dir).exists():
         Path(args.aligner_weight_dir).mkdir()
 
-    torch.save(model.clip_aligner.state_dict(), Path(args.aligner_weight_dir) / (args.align_modality + "_lr_" + args.learning_rate + "_aligner_weight" + ". pth"))
-    
+    torch.save(model.clip_aligner.state_dict(), Path(args.aligner_weight_dir) / (args.align_modality + "_lr_" + str(args.learning_rate) + "_aligner_weight" + ". pth"))

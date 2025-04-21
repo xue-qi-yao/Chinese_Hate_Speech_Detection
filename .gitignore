@@ -5,5 +5,5 @@ test_*
 *.pt
 *.png
 train_log
-aligner_weight
+*_weight/
 __pycache__/
