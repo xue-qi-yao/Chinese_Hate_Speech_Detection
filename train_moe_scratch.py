@@ -1,5 +1,5 @@
 from transformers import BertTokenizer, BertForSequenceClassification
-from utils import read_csv_tsv_expert, load_aligner, load_text
+from utils import read_csv_tsv_expert, load_text
 import argparse
 import torch
 from torch import nn
@@ -34,19 +34,6 @@ def load_speech(speech_path_list):
             embedding_list = [idx2embedding[k] for k in sorted(idx2embedding, key=int)]
             speech_dir_list.extend(embedding_list)
     return speech_dir_list
-
-
-def load_expert_weight(model, args, index):
-    for weight_path in Path(args.expert_weight_dir).rglob("*.pt"):
-        if "image" in weight_path.name:    
-            saved_image_expert_weight = torch.load(weight_path)
-        elif "speech" in weight_path.name:
-            saved_speech_expert_weight = torch.load(weight_path)
-        elif "text" in weight_path.name:
-            saved_text_expert_weight = torch.load(weight_path)
-    model.shared_experts[0].fc.load_state_dict(saved_text_expert_weight[f"layer_{index}_intermediate_dense"])
-    model.routed_experts.experts[0].fc.load_state_dict(saved_speech_expert_weight[f"layer_{index}_intermediate_dense"])
-    model.routed_experts.experts[1].fc.load_state_dict(saved_image_expert_weight[f"layer_{index}_intermediate_dense"])
 
 
 class MMDataset(Dataset):
@@ -101,7 +88,6 @@ class MoEBert(nn.Module):
         for i, layer in enumerate(self.bert.bert.encoder.layer):
             if i in moe_position:
                 layer.intermediate.dense = moe_list[n]
-                load_expert_weight(layer.intermediate.dense, args, i)
                 n += 1
     
     def forward(self, x):
@@ -116,13 +102,7 @@ class MMBert(nn.Module):
     def __init__(self, args, moe_config, moe_position):
         super().__init__()
         self.img_aligner = CLIPAligner(in_feature=512, out_feature=768)
-        img_aligner_weight_path = self.get_aligner_weight_path(args.aligner_weight_dir, "image")
-        load_aligner(self.img_aligner, img_aligner_weight_path)
-
         self.speech_aligner = CLIPAligner(in_feature=512, out_feature=768)
-        speech_aligner_weight_path = self.get_aligner_weight_path(args.aligner_weight_dir, "speech")
-        load_aligner(self.speech_aligner, speech_aligner_weight_path)
-
         self.moe_bert = MoEBert(args, moe_config, moe_position)
 
     def get_aligner_weight_path(self, aligner_weight_dir, modality):
@@ -200,15 +180,13 @@ if __name__ == "__main__":
     parser.add_argument("--lr", default=0.5e-4,  type=float) 
     parser.add_argument("--aligner_weight_dir", default="aligner_weight", type=str)
     parser.add_argument("--expert_weight_dir", default="expert_weight", type=str)
-    parser.add_argument("--moe_weight_dir", default="mmbert_weight", type=str)
     parser.add_argument("--train_log_dir", default="train_log", type=str)
     parser.add_argument("--routed_expert_num", default=2, type=int)
     parser.add_argument("--shared_expert_num", default=1, type=int)
     parser.add_argument("--topk_expert", default=2, type=int)
     parser.add_argument("--loss_fn_factor", default=0.9, type=float)
     args = parser.parse_args()
-
-    save_dir = Path(args.moe_weight_dir)
+    save_dir = Path(args.expert_weight_dir)
     moe_config = MOEConfig(in_dim=768, out_dim=3072, expert_num=args.routed_expert_num, shared_expert_num=args.shared_expert_num, top_k=args.topk_expert)
     moe_position = list(range(12))
     model = MMBert(args, moe_config, moe_position).to(args.device)
@@ -257,8 +235,7 @@ if __name__ == "__main__":
     optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=args.lr)
     loss_fn = nn.CrossEntropyLoss()
     train_dict = train(model, optimizer, loss_fn, train_dataloader, val_dataloader, args)
-    train_log_path = args.train_log_dir + "/moe_lr_" + str(args.lr) + ".json"
+    train_log_path = args.train_log_dir + "/moe_scratch_lr_" + str(args.lr) + ".json"
     with open(train_log_path, "w") as f:
         json.dump(train_dict, f)
-    weight_path = save_dir / "mmbert_weight.pt"
-    torch.save(model.state_dict(), weight_path)
+

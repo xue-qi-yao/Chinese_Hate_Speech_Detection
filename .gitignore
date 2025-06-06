@@ -4,6 +4,6 @@
 test_*
 *.pt
 *.png
-train_log
+# train_log
 *_weight/
 __pycache__/

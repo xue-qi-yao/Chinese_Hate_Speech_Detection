@@ -1,9 +1,9 @@
 from transformers import BertTokenizer, BertForSequenceClassification
-from utils import read_csv_tsv_expert, load_aligner, load_text
+from utils import read_csv_tsv_expert, load_text
 import argparse
 import torch
 from torch import nn
-from torch.utils.data import Dataset, DataLoader, random_split
+from torch.utils.data import Dataset, DataLoader
 from pathlib import Path
 from tqdm import tqdm
 from clip_aligner import CLIPAligner
@@ -11,7 +11,7 @@ import json
 import h5py
 import numpy as np
 import torch.nn.functional as F
-from MoE import SharedExpertMOE, MOEConfig, switch_load_balancing_loss
+from MoE import SharedExpertMOE, MOEConfig
 
 
 def load_img(img_path_list):
@@ -34,19 +34,6 @@ def load_speech(speech_path_list):
             embedding_list = [idx2embedding[k] for k in sorted(idx2embedding, key=int)]
             speech_dir_list.extend(embedding_list)
     return speech_dir_list
-
-
-def load_expert_weight(model, args, index):
-    for weight_path in Path(args.expert_weight_dir).rglob("*.pt"):
-        if "image" in weight_path.name:    
-            saved_image_expert_weight = torch.load(weight_path)
-        elif "speech" in weight_path.name:
-            saved_speech_expert_weight = torch.load(weight_path)
-        elif "text" in weight_path.name:
-            saved_text_expert_weight = torch.load(weight_path)
-    model.shared_experts[0].fc.load_state_dict(saved_text_expert_weight[f"layer_{index}_intermediate_dense"])
-    model.routed_experts.experts[0].fc.load_state_dict(saved_speech_expert_weight[f"layer_{index}_intermediate_dense"])
-    model.routed_experts.experts[1].fc.load_state_dict(saved_image_expert_weight[f"layer_{index}_intermediate_dense"])
 
 
 class MMDataset(Dataset):
@@ -101,7 +88,6 @@ class MoEBert(nn.Module):
         for i, layer in enumerate(self.bert.bert.encoder.layer):
             if i in moe_position:
                 layer.intermediate.dense = moe_list[n]
-                load_expert_weight(layer.intermediate.dense, args, i)
                 n += 1
     
     def forward(self, x):
@@ -116,20 +102,8 @@ class MMBert(nn.Module):
     def __init__(self, args, moe_config, moe_position):
         super().__init__()
         self.img_aligner = CLIPAligner(in_feature=512, out_feature=768)
-        img_aligner_weight_path = self.get_aligner_weight_path(args.aligner_weight_dir, "image")
-        load_aligner(self.img_aligner, img_aligner_weight_path)
-
         self.speech_aligner = CLIPAligner(in_feature=512, out_feature=768)
-        speech_aligner_weight_path = self.get_aligner_weight_path(args.aligner_weight_dir, "speech")
-        load_aligner(self.speech_aligner, speech_aligner_weight_path)
-
         self.moe_bert = MoEBert(args, moe_config, moe_position)
-
-    def get_aligner_weight_path(self, aligner_weight_dir, modality):
-        aligner_weight_dir = Path(aligner_weight_dir)
-        for weight_path in aligner_weight_dir.rglob("*pth"):
-            if modality in weight_path.name:
-                return weight_path
             
     def get_router_logits(self):
         router_logit_list = []
@@ -146,26 +120,6 @@ class MMBert(nn.Module):
         return logits
 
 
-def train_step(model, optimizer, loss_fn, dataloader, args):
-    loss_val = 0
-    model.train()
-    for x, y in dataloader:
-        texts, speechs, imgs = x
-        pred = model(texts, speechs, imgs)
-        router_logits_list = model.get_router_logits()
-        router_losses = [
-            switch_load_balancing_loss(router_logits, args.routed_expert_num, args.topk_expert)
-            for router_logits in router_logits_list
-        ]
-        loss = args.loss_fn_factor * loss_fn(pred, y) + (1-args.loss_fn_factor) * torch.stack(router_losses).sum() / len(router_losses)
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        loss_val += loss.item()
-    loss_val /= len(dataloader)
-    return loss_val, 
-
-
 def val_step(model, dataloader, args):
     acc = 0
     model.eval()
@@ -179,16 +133,12 @@ def val_step(model, dataloader, args):
     return acc
 
 
-def train(model, optimizer, loss_fn, train_dataloader, val_dataloader, args):
-    loss_list = []
+def inference(model, val_dataloader, args):
     acc_list = []
     for epoch in tqdm(range(args.epoch_num)):
-        loss_val = train_step(model, optimizer, loss_fn, train_dataloader, args)
         acc_val = val_step(model, val_dataloader, args)
-        print(f"Epoch{epoch+1} | loss:{loss_val} | acc:{acc_val}")
-        loss_list.append(loss_val)
         acc_list.append(acc_val)
-    return {"train_loss": loss_list, "val_acc": acc_list}
+    print("Accuracy: ", sum(acc_list)/len(acc_list))
 
 
 if __name__ == "__main__":
@@ -196,7 +146,7 @@ if __name__ == "__main__":
     parser.add_argument("--bert_base_model", default="bert-base-chinese", type=str)
     parser.add_argument("--batch_size", default=64,  type=int)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu",  type=str)
-    parser.add_argument("--epoch_num", default=50, type=int)
+    parser.add_argument("--epoch_num", default=1, type=int)
     parser.add_argument("--lr", default=0.5e-4,  type=float) 
     parser.add_argument("--aligner_weight_dir", default="aligner_weight", type=str)
     parser.add_argument("--expert_weight_dir", default="expert_weight", type=str)
@@ -212,16 +162,7 @@ if __name__ == "__main__":
     moe_config = MOEConfig(in_dim=768, out_dim=3072, expert_num=args.routed_expert_num, shared_expert_num=args.shared_expert_num, top_k=args.topk_expert)
     moe_position = list(range(12))
     model = MMBert(args, moe_config, moe_position).to(args.device)
-    for param in model.moe_bert.parameters():
-        param.requires_grad = False
-    for layer in model.moe_bert.bert.bert.encoder.layer:
-        for param in layer.intermediate.parameters():
-            param.requires_grad = True
-    for param in model.moe_bert.bert.classifier.parameters():
-        param.requires_grad = True
-    print(model)
-    for n, p in model.named_parameters():
-        print(n, p.requires_grad)
+    model.load_state_dict(torch.load(save_dir / "mmbert_weight.pt"), strict=False)
     text_list = [
         "ToxiCloakCN/Datasets/base_data.tsv", 
         "ToxiCloakCN/Datasets/Only_Keywords/emoji_keyword.csv", 
@@ -238,27 +179,5 @@ if __name__ == "__main__":
         "homo_speech_data_processed/homo_speech_data.h5"
     ]
     dataset = MMDataset(text_list, img_list, speech_list)
-    train_size = int(len(dataset)*0.9)
-    val_size = len(dataset) - train_size
-    train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
-    train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, collate_fn=lambda batch: mm_collate_fn(batch, args))
-    val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=True, collate_fn=lambda batch: mm_collate_fn(batch, args))
-    no_decay = ["bias", "LayerNorm.weight"]
-    optimizer_grouped_parameters = [
-        {
-            "params": [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)],
-            "weight_decay": 0.01,
-        },
-        {
-            "params": [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)],
-            "weight_decay": 0.0,
-        },
-    ]
-    optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=args.lr)
-    loss_fn = nn.CrossEntropyLoss()
-    train_dict = train(model, optimizer, loss_fn, train_dataloader, val_dataloader, args)
-    train_log_path = args.train_log_dir + "/moe_lr_" + str(args.lr) + ".json"
-    with open(train_log_path, "w") as f:
-        json.dump(train_dict, f)
-    weight_path = save_dir / "mmbert_weight.pt"
-    torch.save(model.state_dict(), weight_path)
+    inference_dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, collate_fn=lambda batch: mm_collate_fn(batch, args))
+    inference(model, inference_dataloader, args)

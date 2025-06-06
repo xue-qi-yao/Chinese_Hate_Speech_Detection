@@ -2,49 +2,59 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import json
 import numpy as np
+import os
 
-train_loss_dir = ""
+# List of training log JSON files
+train_log_files = {
+    "Three stage": "train_log/moe_lr_5e-05.json",
+    "No stage 1": "train_log/moe_lr_5e-05_no_stage1.json",
+    "No stage 2": "train_log/moe_lr_5e-05_no_stage2.json",
+    "No stage 1&2": "train_log/moe_scratch_lr_5e-05.json",
+}
 
-train_rec = json.load(open(train_loss_dir, "r"))
+fixed_colors = ["#FFD700", "green", "blue", "red"]
+plt.figure(figsize=(8, 5))
+sns.set_style("whitegrid")
 
-training_loss = np.array(train_rec["train_loss"])
-validation_loss = np.array(train_rec["val_acc"])
+# Plot each file
+for i, (label, path) in enumerate(train_log_files.items()):
+    if not os.path.exists(path):
+        print(f"File not found: {path}")
+        continue
 
-epochs = list(range(len(validation_loss)))
+    with open(path, "r") as f:
+        rec = json.load(f)
 
-plt.figure(figsize=(6, 4))
+    train_loss = np.array(rec["train_loss"])
+    val_acc = np.array(rec["val_acc"])
+    epochs = list(range(len(val_acc)))
 
-sns.set_palette("muted")
+    color = fixed_colors[i]
 
-plt.plot(epochs, training_loss, label="Training Loss", marker='o', markersize=3, linestyle='-', linewidth=1)
-plt.plot(epochs, validation_loss, label="Validation Accuracy", marker='s', markersize=3, linestyle='--', linewidth=1)
+    # Plot training loss
+    plt.plot(epochs, train_loss, label=f"{label} - Train Loss", color=color, linestyle='-', marker='o', markersize=2, linewidth=1)
 
+    # Plot validation accuracy
+    plt.plot(epochs, val_acc, label=f"{label} - Val Acc", color=color, linestyle='--', marker='s', markersize=3, linewidth=1)
 
-max_val = np.max(validation_loss)
-max_epoch = np.argmax(validation_loss)
-
-plt.text(
-    max_epoch - 2, max_val - 0.02,
-    f"Peak Acc:\n{max_val:.3f}",
-    fontsize=9,
-    ha='right',
-    va='top',
-    bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="black", lw=0.5)
-)
-
-plt.axhline(y=max_val, xmax=max_epoch / len(epochs), color='gray', linestyle='--', linewidth=0.8)
-plt.axvline(x=max_epoch, ymax=max_val / max(validation_loss), color='gray', linestyle='--', linewidth=0.8)
-
-plt.plot(max_epoch, max_val, marker='o', color='red', markersize=4)
-
+# Labels and style
 plt.xlabel("Epoch", fontsize=11, fontweight='bold')
 plt.ylabel("Loss / Accuracy", fontsize=11, fontweight='bold')
+plt.legend(
+    fontsize=9,
+    loc='lower left',
+    bbox_to_anchor=(0.08, 0.01),  # move slightly right from (0.0, 0.0)
+    frameon=True,
+    edgecolor='black'
+)
 
-plt.legend(fontsize=10, loc='center right', frameon=True, edgecolor='black')
+# plt.subplots_adjust(right=0.75)  # Make space for the legend
 plt.grid(linestyle=":", linewidth=0.5)
 plt.xticks(fontsize=10)
 plt.yticks(fontsize=10)
-
+plt.ylim(0, 1)
 sns.despine()
 
-plt.savefig("training_validation_loss.png", dpi=300, bbox_inches='tight')
+plt.tight_layout()
+plt.savefig("multi_training_logs_colored.png", dpi=300, bbox_inches='tight')
+plt.show()
